@@ -13,12 +13,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.net.toFile
 import androidx.core.net.toUri
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
@@ -119,8 +121,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun capturePhoto() {
-        val photoFile = File(externalMediaDirs.first(), "${System.currentTimeMillis()}.jpg")
-        val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "${System.currentTimeMillis()}.jpg")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+        }
+
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        ).build()
 
         imageCapture.takePicture(outputOptions, cameraExecutor, object : ImageCapture.OnImageSavedCallback {
             override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
@@ -137,40 +148,61 @@ class MainActivity : ComponentActivity() {
         })
     }
 
-    private fun recordVideo() {
-        if (isRecording) {
-            activeRecording?.stop()
-            isRecording = false
-        } else {
-            val videoFile = File(externalMediaDirs.first(), "${System.currentTimeMillis()}.mp4")
-            val outputOptions = FileOutputOptions.Builder(videoFile).build()
 
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                activeRecording = videoCapture.output
-                    .prepareRecording(this, outputOptions)
-                    .withAudioEnabled()
-                    .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
-                        when (recordEvent) {
-                            is VideoRecordEvent.Start -> {
-                                Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
-                            }
-                            is VideoRecordEvent.Finalize -> {
-                                if (!recordEvent.hasError()) {
-                                    Toast.makeText(this, "Video saved: ${videoFile.absolutePath}", Toast.LENGTH_SHORT).show()
-                                    playVideo(videoFile)
-                                } else {
-                                    Toast.makeText(this, "Error recording video: ${recordEvent.error}", Toast.LENGTH_SHORT).show()
+    private fun recordVideo() {
+        try {
+            if (isRecording) {
+                activeRecording?.stop()
+                isRecording = false
+            } else {
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, "${System.currentTimeMillis()}.mp4")
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES)
+                }
+
+                val outputOptions = MediaStoreOutputOptions.Builder(
+                    contentResolver,
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                ).setContentValues(contentValues).build()
+
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    activeRecording = videoCapture.output
+                        .prepareRecording(this, outputOptions)
+                        .withAudioEnabled()
+                        .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
+                            when (recordEvent) {
+                                is VideoRecordEvent.Start -> {
+                                    Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
+                                }
+                                is VideoRecordEvent.Finalize -> {
+                                    if (!recordEvent.hasError()) {
+                                        Toast.makeText(this, "Video saved", Toast.LENGTH_SHORT).show()
+                                        playVideo(recordEvent.outputResults.outputUri.toFile())
+                                    } else {
+                                        Toast.makeText(this, "Error recording video: ${recordEvent.error}", Toast.LENGTH_SHORT).show()
+                                    }
+                                    // Reiniciar el estado para permitir una nueva grabación
+                                    activeRecording = null
+                                    isRecording = false
                                 }
                             }
                         }
-                    }
-                isRecording = true
-            } else {
-                Toast.makeText(this, "Audio permission is required to record video", Toast.LENGTH_SHORT).show()
-                requestPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                    isRecording = true
+                } else {
+                    Toast.makeText(this, "Audio permission is required to record video", Toast.LENGTH_SHORT).show()
+                    requestPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                }
             }
+        } catch (e: Exception) {
+            // Captura cualquier excepción inesperada
+            Toast.makeText(this, "An error occurred: ${e.message}", Toast.LENGTH_SHORT).show()
+            e.printStackTrace()
+            isRecording = false
+            activeRecording = null
         }
     }
+
 
     private fun playVideo(file: File) {
         if (file.exists()) {
